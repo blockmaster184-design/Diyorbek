@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+    <meta charset="UTF-8">
+    <title>Pro Snake - MiniMap & Names</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        body { margin: 0; background: #05050a; overflow: hidden; font-family: 'Segoe UI', sans-serif; color: white; }
+        canvas { display: block; }
+        
+        .overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; 
+                    align-items: center; justify-content: center; background: rgba(0,0,0,0.9); z-index: 10; }
+        .box { background: #111; padding: 40px; border-radius: 20px; border: 2px solid #00ff88; text-align: center; min-width: 300px; }
+        
+        input { padding: 12px; border-radius: 8px; border: 1px solid #333; width: 200px; font-size: 16px; margin-bottom: 15px; text-align: center; background: #222; color: white; }
+        button { padding: 12px 25px; background: #00ff88; border: none; border-radius: 8px; cursor: pointer; 
+                 font-weight: bold; font-size: 16px; transition: 0.3s; color: #000; width: 100%; margin-top: 10px;}
+        button:hover { background: #00cc6e; transform: scale(1.02); }
+        
+        #ui { position: absolute; top: 20px; left: 20px; z-index: 5; pointer-events: none; }
+        
+        /* Mini-map uslubi */
+        #minimap-container { position: absolute; top: 20px; right: 20px; width: 150px; height: 150px; 
+                             background: rgba(0,0,0,0.5); border: 2px solid rgba(255,255,255,0.2); border-radius: 5px; overflow: hidden; }
+        #minimap-canvas { width: 100%; height: 100%; }
+
+        #death-menu { display: none; }
+    </style>
+</head>
+<body>
+
+    <div id="start-menu" class="overlay">
+        <div class="box">
+            <h1>SNAKE PRO</h1>
+            <input type="text" id="userName" placeholder="Ismingizni yozing" maxlength="12"> <br>
+            <input type="number" id="roomId" placeholder="Xona ID (masalan: 1)"> <br>
+            <button onclick="initPeer(true)">Xona Ochish</button>
+            <button onclick="initPeer(false)" style="background: #00d4ff;">Xonaga Kirish</button>
+        </div>
+    </div>
+
+    <div id="death-menu" class="overlay">
+        <div class="box">
+            <h2 style="color: #ff4757;">O'YIN TUGADI!</h2>
+            <p>Sizning balingiz: <span id="final-score">0</span></p>
+            <button onclick="respawn()">Qayta o'ynash</button>
+            <button style="background: #ff4757; color: white;" onclick="location.reload()">Chiqish</button>
+        </div>
+    </div>
+
+    <div id="ui">
+        <div style="font-size: 24px;">Ball: <span id="score">0</span></div>
+        <div id="user-display" style="color: #00ff88;"></div>
+    </div>
+
+    <div id="minimap-container">
+        <canvas id="minimap-canvas"></canvas>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById("gameCanvas");
+        const ctx = canvas.getContext("2d");
+        const miniCanvas = document.getElementById("minimap-canvas");
+        const mctx = miniCanvas.getContext("2d");
+        
+        const WORLD_SIZE = 3000;
+        let myId, myName, peer, conn, isDead = false;
+        
+        let cam = { x: 0, y: 0 };
+        let mouse = { x: 0, y: 0 };
+        let myPos = { x: WORLD_SIZE/2, y: WORLD_SIZE/2 };
+        let mySegments = Array(15).fill({x: WORLD_SIZE/2, y: WORLD_SIZE/2});
+        let myScore = 0;
+        let myColor = `hsl(${Math.random()*360}, 80%, 50%)`;
+        
+        let players = {};
+        let foods = Array(100).fill(0).map(() => ({
+            x: Math.random() * WORLD_SIZE, 
+            y: Math.random() * WORLD_SIZE,
+            c: `hsl(${Math.random()*360}, 100%, 50%)`
+        }));
+
+        function initPeer(isHost) {
+            const id = document.getElementById("roomId").value;
+            myName = document.getElementById("userName").value || "Mehmon";
+            if(!id) return alert("Xona ID kiriting!");
+            
+            myId = "S_" + Math.random().toString(36).substr(2, 5);
+            const roomName = "uz-snake-" + id;
+            
+            peer = isHost ? new Peer(roomName) : new Peer();
+            
+            peer.on('open', () => {
+                if(!isHost) {
+                    conn = peer.connect(roomName);
+                    setupConnection();
+                }
+                document.getElementById("start-menu").style.display = "none";
+                document.getElementById("user-display").innerText = "O'yinchi: " + myName;
+                startLoop();
+            });
+
+            peer.on('connection', c => {
+                conn = c;
+                setupConnection();
+            });
+        }
+
+        function setupConnection() {
+            conn.on('data', data => {
+                if(data.id) players[data.id] = data;
+            });
+        }
+
+        function startLoop() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            miniCanvas.width = 150;
+            miniCanvas.height = 150;
+            requestAnimationFrame(loop);
+        }
+
+        function loop() {
+            if(!isDead) update();
+            draw();
+            drawMinimap();
+            requestAnimationFrame(loop);
+        }
+
+        function update() {
+            let head = {...mySegments[0]};
+            let angle = Math.atan2(mouse.y - canvas.height/2, mouse.x - canvas.width/2);
+            
+            myPos.x += Math.cos(angle) * 4;
+            myPos.y += Math.sin(angle) * 4;
+
+            if(myPos.x < 0 || myPos.x > WORLD_SIZE || myPos.y < 0 || myPos.y > WORLD_SIZE) die();
+
+            mySegments.unshift({x: myPos.x, y: myPos.y});
+            mySegments.pop();
+
+            cam.x = myPos.x - canvas.width/2;
+            cam.y = myPos.y - canvas.height/2;
+
+            foods.forEach((f, i) => {
+                if(Math.hypot(myPos.x - f.x, myPos.y - f.y) < 20) {
+                    myScore += 10;
+                    mySegments.push({...mySegments[mySegments.length-1]});
+                    foods[i] = {x: Math.random()*WORLD_SIZE, y: Math.random()*WORLD_SIZE, c: f.c};
+                }
+            });
+
+            Object.values(players).forEach(p => {
+                p.segments.forEach(s => {
+                    if(Math.hypot(myPos.x - s.x, myPos.y - s.y) < 12) die();
+                });
+            });
+
+            if(conn && conn.open) {
+                conn.send({id: myId, name: myName, segments: mySegments, color: myColor, score: myScore});
+            }
+            document.getElementById("score").innerText = myScore;
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.save();
+            ctx.translate(-cam.x, -cam.y);
+
+            // Border
+            ctx.strokeStyle = "#00ff88"; ctx.lineWidth = 10;
+            ctx.strokeRect(0, 0, WORLD_SIZE, WORLD_SIZE);
+
+            foods.forEach(f => {
+                ctx.fillStyle = f.c;
+                ctx.beginPath(); ctx.arc(f.x, f.y, 6, 0, Math.PI*2); ctx.fill();
+            });
+
+            // Raqiblar
+            Object.values(players).forEach(p => {
+                drawSnake(p.segments, p.color, p.name);
+            });
+
+            // O'zim
+            drawSnake(mySegments, myColor, myName);
+
+            ctx.restore();
+        }
+
+        function drawSnake(segs, col, name) {
+            segs.forEach((s, i) => {
+                ctx.fillStyle = col; ctx.globalAlpha = i===0 ? 1 : 0.4;
+                ctx.beginPath(); ctx.arc(s.x, s.y, 12, 0, Math.PI*2); ctx.fill();
+            });
+            // Ismni chizish
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = "white";
+            ctx.font = "bold 14px Arial";
+            ctx.textAlign = "center";
+            ctx.fillText(name, segs[0].x, segs[0].y - 20);
+        }
+
+        function drawMinimap() {
+            mctx.clearRect(0, 0, 150, 150);
+            const scale = 150 / WORLD_SIZE;
+
+            // O'zim (Yashil nuqta)
+            mctx.fillStyle = "#00ff88";
+            mctx.beginPath(); mctx.arc(myPos.x * scale, myPos.y * scale, 3, 0, Math.PI*2); mctx.fill();
+
+            // Raqiblar (Qizil nuqtalar)
+            mctx.fillStyle = "#ff4757";
+            Object.values(players).forEach(p => {
+                mctx.beginPath(); mctx.arc(p.segments[0].x * scale, p.segments[0].y * scale, 2, 0, Math.PI*2); mctx.fill();
+            });
+        }
+
+        function die() {
+            isDead = true;
+            document.getElementById("final-score").innerText = myScore;
+            document.getElementById("death-menu").style.display = "flex";
+        }
+
+        function respawn() {
+            isDead = false;
+            myScore = 0;
+            myPos = { x: WORLD_SIZE/2, y: WORLD_SIZE/2 };
+            mySegments = Array(15).fill({x: WORLD_SIZE/2, y: WORLD_SIZE/2});
+            document.getElementById("death-menu").style.display = "none";
+        }
+
+        window.addEventListener("mousemove", e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+    </script>
+</body>
+</html>
